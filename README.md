@@ -11,6 +11,30 @@ A platform for exam preparation, designed to guide study through student perform
 
 ## Current status
 
-Initial repository and development environment setup. The features described above have not been implemented yet.
+The API provides a basic `GET /` endpoint, covered by an automated test.
+Database integration and the remaining features are not implemented yet.
 
-Setup and usage instructions will be added with the first runnable version of V0.
+## Local setup
+
+Requires Python 3.12. Run these commands from the repository root:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+## Run the API
+
+```bash
+python -m uvicorn app.main:app --reload
+```
+
+- API: http://127.0.0.1:8000/
+- Interactive documentation: http://127.0.0.1:8000/docs
+
+## Run tests
+
+```bash
+python -m pytest -v
+```
