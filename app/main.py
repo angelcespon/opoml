@@ -1,7 +1,8 @@
 # main.py
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Path
 from sqlalchemy import text
+from typing import Annotated
 
 from app.database import engine
 from app.schemas import TopicCreate, TopicRead
@@ -33,6 +34,30 @@ def list_topics():
         ]
 
     return topics
+
+@app.get("/topics/{topic_id}", response_model=TopicRead)
+def read_topic(topic_id: Annotated[int, Path(gt=0)]):
+    with engine.connect() as connection:
+        result = connection.execute(
+            text(
+                """
+                SELECT id, name, description
+                FROM public.topics
+                WHERE id = :topic_id
+                """
+            ),
+            {"topic_id": topic_id},
+        )
+
+        topic = result.mappings().one_or_none()
+
+    if topic is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Tema no encontrado",
+        )
+
+    return dict(topic)
 
 
 # POST

@@ -136,3 +136,49 @@ def test_create_topic_rejects_extra_field():
 
     assert response.status_code == 422
     mock_begin.assert_not_called()
+
+def test_read_topic_returns_existing_topic():
+    expected_topic = {
+        "id": 1,
+        "name": "Constitución",
+        "description": None,
+    }
+
+    with patch("app.main.engine.connect") as mock_connect:
+        connection = mock_connect.return_value.__enter__.return_value
+        result = connection.execute.return_value
+        result.mappings.return_value.one_or_none.return_value = expected_topic
+
+        with TestClient(app) as client:
+            response = client.get("/topics/1")
+
+    assert response.status_code == 200
+    assert response.json() == expected_topic
+
+    connection.execute.assert_called_once()
+    assert connection.execute.call_args.args[1] == {"topic_id": 1}
+
+
+def test_read_topic_returns_404_for_missing_topic():
+    with patch("app.main.engine.connect") as mock_connect:
+        connection = mock_connect.return_value.__enter__.return_value
+        result = connection.execute.return_value
+        result.mappings.return_value.one_or_none.return_value = None
+
+        with TestClient(app) as client:
+            response = client.get("/topics/999999")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Tema no encontrado"}
+
+    connection.execute.assert_called_once()
+    assert connection.execute.call_args.args[1] == {"topic_id": 999999}
+
+
+def test_read_topic_rejects_zero_id():
+    with patch("app.main.engine.connect") as mock_connect:
+        with TestClient(app) as client:
+            response = client.get("/topics/0")
+
+    assert response.status_code == 422
+    mock_connect.assert_not_called()

@@ -65,8 +65,9 @@ python -m uvicorn app.main:app --reload
 | Method | Path | Description |
 |---|---|---|
 | GET | `/` | Return basic service information. |
-| POST | `/topics/validate` | Validate and normalize topic data without saving it. |
 | GET | `/topics` | List stored topics. |
+| GET | `/topics/{topic_id}` | Retrieve a topic by its identifier. |
+| POST | `/topics/validate` | Validate and normalize topic data without saving it. |
 | POST | `/topics` | Create and store a topic. |
 
 ## Run tests
