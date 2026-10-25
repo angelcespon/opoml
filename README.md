@@ -11,11 +11,12 @@ A platform for exam preparation, designed to guide study through student perform
 
 ## Current status
 
-The API supports topic validation, creation, and listing. Topics are stored in PostgreSQL hosted on Supabase.
+The API supports topic validation, creation, listing, and retrieval by ID. Questions with three to five options and exactly one correct answer can be created and retrieved. Question retrieval hides the solution and explanation.
 
-Automated tests cover schema validation and endpoint behavior. Database access is mocked in endpoint tests.
+Data is stored in PostgreSQL hosted on Supabase.
+Automated tests cover input validation and selected endpoint behaviors, with database access mocked.
 
-Question management and performance tracking are not implemented yet.
+Practice attempts, answer submission, and performance tracking are not implemented yet.
 
 ## Local setup
 
@@ -67,8 +68,10 @@ python -m uvicorn app.main:app --reload
 | GET | `/` | Return basic service information. |
 | GET | `/topics` | List stored topics. |
 | GET | `/topics/{topic_id}` | Retrieve a topic by its identifier. |
+| GET | `/questions/{question_id}` | Retrieve a question without revealing its solution. |
 | POST | `/topics/validate` | Validate and normalize topic data without saving it. |
 | POST | `/topics` | Create and store a topic. |
+| POST | `/questions` | Create a question with its answer options. |
 
 ## Run tests
 
