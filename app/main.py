@@ -1,17 +1,21 @@
 # main.py
 
 from fastapi import FastAPI, HTTPException, Path
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from typing import Annotated
 
 from app.database import engine
 from app.schemas import (
+    AttemptCreate,
+    AttemptRead,
     QuestionCreate,
     QuestionCreated,
     QuestionRead,
     TopicCreate,
-    TopicRead
+    TopicRead,
+    TopicPerformanceRead,
 )
+
 # Crear aplicación web
 app = FastAPI(title="OpoML")
 
@@ -106,6 +110,111 @@ def read_question(question_id: Annotated[int, Path(gt=0)]):
 
     return response
 
+@app.get("/attempts/{attempt_id}", response_model=AttemptRead)
+def read_attempt(attempt_id: Annotated[int, Path(gt=0)]):
+    with engine.connect() as connection:
+        result = connection.execute(
+            text(
+                """
+                SELECT
+                    id,
+                    submitted_at,
+                    total_questions,
+                    correct_answers,
+                    incorrect_answers,
+                    unanswered_questions,
+                    accuracy_percentage
+                FROM public.practice_attempts
+                WHERE id = :attempt_id
+                """
+            ),
+            {"attempt_id": attempt_id},
+        )
+
+        attempt = result.mappings().one_or_none()
+
+        if attempt is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Práctica no encontrada",
+            )
+
+        response = dict(attempt)
+
+    return response
+
+@app.get(
+    "/topics/{topic_id}/performance",
+    response_model=TopicPerformanceRead,
+)
+def read_topic_performance(
+    topic_id: Annotated[int, Path(gt=0)],
+):
+    with engine.connect() as connection:
+        topic_result = connection.execute(
+            text(
+                """
+                SELECT id
+                FROM public.topics
+                WHERE id = :topic_id
+                """
+            ),
+            {"topic_id": topic_id},
+        )
+
+        if topic_result.mappings().one_or_none() is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Tema no encontrado",
+            )
+
+        performance_result = connection.execute(
+            text(
+                """
+                SELECT
+                    COUNT(DISTINCT a.attempt_id) AS attempt_count,
+                    COUNT(*) AS total_questions,
+
+                    COUNT(*) FILTER (
+                        WHERE a.is_correct = TRUE
+                    ) AS correct_answers,
+
+                    COUNT(*) FILTER (
+                        WHERE a.is_correct = FALSE
+                          AND a.selected_option_id IS NOT NULL
+                    ) AS incorrect_answers,
+
+                    COUNT(*) FILTER (
+                        WHERE a.selected_option_id IS NULL
+                    ) AS unanswered_questions
+
+                FROM public.attempt_answers AS a
+
+                JOIN public.questions AS q
+                    ON q.id = a.question_id
+
+                WHERE q.topic_id = :topic_id
+                """
+            ),
+            {"topic_id": topic_id},
+        )
+
+        response = dict(performance_result.mappings().one())
+
+    response["topic_id"] = topic_id
+    total_questions = response["total_questions"]
+
+    response["accuracy_percentage"] = (
+        round(
+            response["correct_answers"] / total_questions * 100,
+            2,
+        )
+        if total_questions > 0
+        else None
+    )
+
+    return response
+
 
 # POST
 @app.post("/topics/validate")
@@ -192,3 +301,180 @@ def create_question(question: QuestionCreate):
         created_question["options"] = created_options
 
     return created_question
+
+@app.post("/attempts", response_model=AttemptRead, status_code=201)
+def create_attempt(attempt: AttemptCreate):
+    question_ids = [
+        answer.question_id
+        for answer in attempt.answers
+    ]
+
+    selected_option_ids = [
+        answer.selected_option_id
+        for answer in attempt.answers
+        if answer.selected_option_id is not None
+    ]
+
+    correct_answers = 0
+    unanswered_questions = 0
+    answer_records = []
+
+    with engine.begin() as connection:
+        # Recuperar todas las preguntas solicitadas.
+        questions_result = connection.execute(
+            text(
+                """
+                SELECT id
+                FROM public.questions
+                WHERE id IN :question_ids
+                """
+            ).bindparams(
+                bindparam("question_ids", expanding=True)
+            ),
+            {"question_ids": question_ids},
+        )
+
+        existing_question_ids = {
+            question["id"]
+            for question in questions_result.mappings()
+        }
+
+        # Recuperar todas las opciones seleccionadas.
+        options_by_id = {}
+
+        if selected_option_ids:
+            options_result = connection.execute(
+                text(
+                    """
+                    SELECT id, question_id, is_correct
+                    FROM public.question_options
+                    WHERE id IN :option_ids
+                    """
+                ).bindparams(
+                    bindparam("option_ids", expanding=True)
+                ),
+                {"option_ids": selected_option_ids},
+            )
+
+            options_by_id = {
+                option["id"]: dict(option)
+                for option in options_result.mappings()
+            }
+
+        # Validar y corregir utilizando los datos recuperados.
+        for answer in attempt.answers:
+            if answer.question_id not in existing_question_ids:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Pregunta {answer.question_id} no encontrada",
+                )
+
+            if answer.selected_option_id is None:
+                is_correct = False
+                unanswered_questions += 1
+            else:
+                option = options_by_id.get(answer.selected_option_id)
+
+                if (
+                    option is None
+                    or option["question_id"] != answer.question_id
+                ):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "La opción seleccionada no pertenece "
+                            f"a la pregunta {answer.question_id}"
+                        ),
+                    )
+
+                is_correct = option["is_correct"]
+
+                if is_correct:
+                    correct_answers += 1
+
+            answer_records.append(
+                {
+                    "question_id": answer.question_id,
+                    "selected_option_id": answer.selected_option_id,
+                    "is_correct": is_correct,
+                }
+            )
+
+        # Calcular el resumen definitivo.
+        total_questions = len(attempt.answers)
+
+        incorrect_answers = (
+            total_questions - correct_answers - unanswered_questions
+        )
+
+        accuracy_percentage = round(
+            correct_answers / total_questions * 100,
+            2,
+        )
+
+        # Guardar la práctica y su resumen.
+        attempt_result = connection.execute(
+            text(
+                """
+                INSERT INTO public.practice_attempts (
+                    total_questions,
+                    correct_answers,
+                    incorrect_answers,
+                    unanswered_questions,
+                    accuracy_percentage
+                )
+                VALUES (
+                    :total_questions,
+                    :correct_answers,
+                    :incorrect_answers,
+                    :unanswered_questions,
+                    :accuracy_percentage
+                )
+                RETURNING
+                    id,
+                    submitted_at,
+                    total_questions,
+                    correct_answers,
+                    incorrect_answers,
+                    unanswered_questions,
+                    accuracy_percentage
+                """
+            ),
+            {
+                "total_questions": total_questions,
+                "correct_answers": correct_answers,
+                "incorrect_answers": incorrect_answers,
+                "unanswered_questions": unanswered_questions,
+                "accuracy_percentage": accuracy_percentage,
+            },
+        )
+
+        created_attempt = dict(attempt_result.mappings().one())
+
+        for record in answer_records:
+            record["attempt_id"] = created_attempt["id"]
+
+        # Guardar todas las respuestas por lotes.
+        connection.execute(
+            text(
+                """
+                INSERT INTO public.attempt_answers (
+                    attempt_id,
+                    question_id,
+                    selected_option_id,
+                    is_correct
+                )
+                VALUES (
+                    :attempt_id,
+                    :question_id,
+                    :selected_option_id,
+                    :is_correct
+                )
+                """
+            ),
+            answer_records,
+        )
+
+        response = AttemptRead(**created_attempt)
+
+    return response

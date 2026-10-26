@@ -59,3 +59,52 @@ CREATE TABLE public.question_options (
 CREATE UNIQUE INDEX question_options_one_correct_idx
     ON public.question_options (question_id)
     WHERE is_correct = TRUE;
+
+CREATE TABLE public.practice_attempts (
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+
+    submitted_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    total_questions INTEGER NOT NULL,
+    correct_answers INTEGER NOT NULL,
+    incorrect_answers INTEGER NOT NULL,
+    unanswered_questions INTEGER NOT NULL,
+    accuracy_percentage NUMERIC(5, 2) NOT NULL,
+
+    CONSTRAINT practice_attempts_counts_check CHECK (
+        total_questions > 0
+        AND correct_answers >= 0
+        AND incorrect_answers >= 0
+        AND unanswered_questions >= 0
+        AND total_questions = (
+            correct_answers
+            + incorrect_answers
+            + unanswered_questions
+        )
+    ),
+
+    CONSTRAINT practice_attempts_accuracy_check CHECK (
+        accuracy_percentage BETWEEN 0 AND 100
+    )
+);
+
+CREATE TABLE public.attempt_answers (
+    attempt_id INTEGER NOT NULL
+        REFERENCES public.practice_attempts (id),
+
+    question_id INTEGER NOT NULL
+        REFERENCES public.questions (id),
+
+    selected_option_id INTEGER
+        REFERENCES public.question_options (id),
+
+    is_correct BOOLEAN NOT NULL,
+
+    CONSTRAINT attempt_answers_pkey
+        PRIMARY KEY (attempt_id, question_id),
+
+    CONSTRAINT attempt_answers_unanswered_check CHECK (
+        selected_option_id IS NOT NULL
+        OR is_correct = FALSE
+    )
+);

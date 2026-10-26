@@ -1,6 +1,7 @@
 # schemas.py
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Self
+from datetime import datetime
 
 class TopicCreate(BaseModel):
     model_config = ConfigDict(
@@ -79,3 +80,54 @@ class QuestionRead(BaseModel):
     topic_id: int
     statement: str
     options: list[QuestionOptionRead]
+
+class AttemptAnswerCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question_id: int = Field(gt=0)
+    selected_option_id: int | None = Field(
+        default=None,
+        gt=0,
+    )
+
+
+class AttemptCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answers: list[AttemptAnswerCreate] = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+    @model_validator(mode="after")
+    def require_unique_questions(self) -> Self:
+        question_ids = [
+            answer.question_id
+            for answer in self.answers
+        ]
+
+        if len(question_ids) != len(set(question_ids)):
+            raise ValueError(
+                "Una pregunta no puede aparecer varias veces "
+                "en la misma práctica."
+            )
+
+        return self
+
+class AttemptRead(BaseModel):
+    id: int
+    submitted_at: datetime
+    total_questions: int
+    correct_answers: int
+    incorrect_answers: int
+    unanswered_questions: int
+    accuracy_percentage: float
+
+class TopicPerformanceRead(BaseModel):
+    topic_id: int
+    attempt_count: int
+    total_questions: int
+    correct_answers: int
+    incorrect_answers: int
+    unanswered_questions: int
+    accuracy_percentage: float | None

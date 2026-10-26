@@ -11,12 +11,18 @@ A platform for exam preparation, designed to guide study through student perform
 
 ## Current status
 
-The API supports topic validation, creation, listing, and retrieval by ID. Questions with three to five options and exactly one correct answer can be created and retrieved. Question retrieval hides the solution and explanation.
+The API supports topic management, question creation and retrieval,
+practice submission, stored attempt summaries, and cumulative performance
+by topic.
 
-Data is stored in PostgreSQL hosted on Supabase.
-Automated tests cover input validation and selected endpoint behaviors, with database access mocked.
+Questions support three to five options with exactly one correct answer.
+Practice submissions record correct, incorrect, and unanswered questions.
 
-Practice attempts, answer submission, and performance tracking are not implemented yet.
+Data is stored in PostgreSQL hosted on Supabase. Automated tests cover
+input validation and endpoint behavior with mocked database access.
+
+Detailed attempt review and PostgreSQL integration tests are pending.
+The current version is intended for a single student without authentication.
 
 ## Local setup
 
@@ -69,9 +75,13 @@ python -m uvicorn app.main:app --reload
 | GET | `/topics` | List stored topics. |
 | GET | `/topics/{topic_id}` | Retrieve a topic by its identifier. |
 | GET | `/questions/{question_id}` | Retrieve a question without revealing its solution. |
+| GET | `/attempts/{attempt_id}` | Retrieve a stored attempt summary. |
+| GET | `/topics/{topic_id}/performance` | Retrieve cumulative performance for a topic. |
 | POST | `/topics/validate` | Validate and normalize topic data without saving it. |
 | POST | `/topics` | Create and store a topic. |
 | POST | `/questions` | Create a question with its answer options. |
+| POST | `/attempts` | Submit a practice attempt and store its results. |
+
 
 ## Run tests
 
