@@ -131,3 +131,17 @@ class TopicPerformanceRead(BaseModel):
     incorrect_answers: int
     unanswered_questions: int
     accuracy_percentage: float | None
+
+class AttemptAnswerRead(BaseModel):
+    question_id: int
+    statement: str
+    selected_option_id: int | None
+    selected_option_content: str | None
+    is_correct: bool
+    correct_option_id: int | None
+    correct_option_content: str | None
+    explanation: str | None
+
+
+class AttemptReviewRead(AttemptRead):
+    answers: list[AttemptAnswerRead]

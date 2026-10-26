@@ -223,3 +223,92 @@ def test_read_attempt_rejects_zero_id():
 
     assert response.status_code == 422
     mock_connect.assert_not_called()
+
+
+def test_attempt_review_returns_summary_and_answers():
+    summary = {
+        "id": 1,
+        "submitted_at": datetime(
+            2026, 10, 26, 10, 0, tzinfo=timezone.utc
+        ),
+        "total_questions": 2,
+        "correct_answers": 1,
+        "incorrect_answers": 0,
+        "unanswered_questions": 1,
+        "accuracy_percentage": 50.0,
+    }
+
+    answers = [
+        {
+            "question_id": 1,
+            "statement": "¿Cuál es la capital de España?",
+            "selected_option_id": 2,
+            "selected_option_content": "Madrid",
+            "is_correct": True,
+            "correct_option_id": 2,
+            "correct_option_content": "Madrid",
+            "explanation": "Madrid es la capital de España.",
+        },
+        {
+            "question_id": 2,
+            "statement": "¿Cuánto es 2 + 2?",
+            "selected_option_id": None,
+            "selected_option_content": None,
+            "is_correct": False,
+            "correct_option_id": 5,
+            "correct_option_content": "4",
+            "explanation": "La suma de dos y dos es cuatro.",
+        },
+    ]
+
+    attempt_result = MagicMock()
+    attempt_result.mappings.return_value.one_or_none.return_value = (
+        summary
+    )
+
+    answers_result = make_rows_result(answers)
+
+    with patch("app.main.engine.connect") as mock_connect:
+        connection = mock_connect.return_value.__enter__.return_value
+        connection.execute.side_effect = [
+            attempt_result,
+            answers_result,
+        ]
+
+        with TestClient(app) as client:
+            response = client.get("/attempts/1/review")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        **summary,
+        "submitted_at": "2026-10-26T10:00:00Z",
+        "answers": answers,
+    }
+
+    assert connection.execute.call_count == 2
+
+    for call in connection.execute.call_args_list:
+        assert call.args[1] == {"attempt_id": 1}
+
+
+def test_attempt_review_returns_404_for_missing_attempt():
+    with patch("app.main.engine.connect") as mock_connect:
+        connection = mock_connect.return_value.__enter__.return_value
+        result = connection.execute.return_value
+        result.mappings.return_value.one_or_none.return_value = None
+
+        with TestClient(app) as client:
+            response = client.get("/attempts/999999/review")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Práctica no encontrada"}
+    connection.execute.assert_called_once()
+
+
+def test_attempt_review_rejects_zero_id():
+    with patch("app.main.engine.connect") as mock_connect:
+        with TestClient(app) as client:
+            response = client.get("/attempts/0/review")
+
+    assert response.status_code == 422
+    mock_connect.assert_not_called()

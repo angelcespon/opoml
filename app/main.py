@@ -14,6 +14,7 @@ from app.schemas import (
     TopicCreate,
     TopicRead,
     TopicPerformanceRead,
+    AttemptReviewRead,
 )
 
 # Crear aplicación web
@@ -212,6 +213,83 @@ def read_topic_performance(
         if total_questions > 0
         else None
     )
+
+    return response
+
+@app.get(
+    "/attempts/{attempt_id}/review",
+    response_model=AttemptReviewRead,
+)
+def read_attempt_review(
+    attempt_id: Annotated[int, Path(gt=0)],
+):
+    with engine.connect() as connection:
+        attempt_result = connection.execute(
+            text(
+                """
+                SELECT
+                    id,
+                    submitted_at,
+                    total_questions,
+                    correct_answers,
+                    incorrect_answers,
+                    unanswered_questions,
+                    accuracy_percentage
+                FROM public.practice_attempts
+                WHERE id = :attempt_id
+                """
+            ),
+            {"attempt_id": attempt_id},
+        )
+
+        attempt = attempt_result.mappings().one_or_none()
+
+        if attempt is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Práctica no encontrada",
+            )
+
+        answers_result = connection.execute(
+            text(
+                """
+                SELECT
+                    a.question_id,
+                    q.statement,
+                    a.selected_option_id,
+                    s.content AS selected_option_content,
+                    a.is_correct,
+                    c.id AS correct_option_id,
+                    c.content AS correct_option_content,
+                    q.explanation
+
+                FROM public.attempt_answers AS a
+
+                JOIN public.questions AS q
+                    ON q.id = a.question_id
+
+                LEFT JOIN public.question_options AS s
+                    ON s.id = a.selected_option_id
+                    AND s.question_id = a.question_id
+
+                LEFT JOIN public.question_options AS c
+                    ON c.question_id = a.question_id
+                    AND c.is_correct = TRUE
+
+                WHERE a.attempt_id = :attempt_id
+
+                ORDER BY a.question_id
+                """
+            ),
+            {"attempt_id": attempt_id},
+        )
+
+        response = dict(attempt)
+
+        response["answers"] = [
+            dict(answer)
+            for answer in answers_result.mappings()
+        ]
 
     return response
 
