@@ -1,34 +1,42 @@
 # OpoML
 
-A platform for exam preparation, designed to guide study through student performance analysis. Planned capabilities include AI-powered queries over study materials and Machine Learning to personalize practice.
+A platform for competitive exam preparation, designed to guide study through student performance analysis. Planned capabilities include AI-powered queries over study materials, question generation, and Machine Learning to personalize practice.
 
-## Planned development
+## Roadmap
 
-- **V0:** backend, database, automated tests, and performance tracking.
-- **V1:** RAG-based queries over study materials with source citations.
-- **V2:** evaluation of retrieval, answers, and citations.
-- **V3:** ML-based personalization.
+- **V0:** backend, PostgreSQL database, automated tests, and performance tracking.
+- **V1:** RAG-based queries and question generation from study materials, with source citations.
+- **V2:** web interface and user pilot.
+- **V3:** evaluation of retrieval, answers, citations, and generated questions.
+- **V4:** ML-based personalization.
 
 ## Current status
 
-The API supports topic management, question creation and retrieval,
-practice submission, stored attempt summaries, and cumulative performance
-by topic.
+The V0 backend supports:
 
-Questions support three to five options with exactly one correct answer.
-Practice submissions record correct, incorrect, and unanswered questions.
+- Topic creation and retrieval.
+- Questions with three to five options and exactly one correct answer.
+- Practice submission with correct, incorrect, and unanswered responses.
+- Stored attempt summaries and detailed answer review.
+- Cumulative performance by topic.
 
-Data is stored in PostgreSQL hosted on Supabase. Automated tests cover
-input validation and endpoint behavior with mocked database access.
+Application data is stored in PostgreSQL hosted on Supabase.
 
-Detailed attempt review and PostgreSQL integration tests are pending.
-The current version is intended for a single student without authentication.
+The test suite includes validation tests, endpoint tests with mocked database access, and integration tests against a separate local PostgreSQL database. Integration tests cover schema availability, the complete practice flow, and transaction rollback when saving answers fails.
+
+## Current limitations
+
+- Intended for a single student; authentication and a web interface are not implemented.
+- AI features and ML personalization are planned.
+- Accuracy is the percentage of correct answers out of all submitted questions, including unanswered ones. It is not an exam-specific score with penalties.
+- Attempt summaries and answer correctness are stored at submission time. Review text and correct-option details are retrieved from the current question data. Historical content versioning is not implemented.
+- Question editing and deletion are not exposed by the API.
 
 ## Local setup
 
-Requires Python 3.12 and a Supabase project with a PostgreSQL database.
+Requires Python 3.12 and a Supabase PostgreSQL database. The commands below target Ubuntu or WSL.
 
-Run these commands from the repository root:
+Run from the repository root:
 
 ```bash
 python3 -m venv .venv
@@ -36,13 +44,13 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-Copy the environment configuration template:
+Copy the application configuration template:
 
 ```bash
 cp .env.example .env
 ```
 
-Fill in `.env` with your Supabase PostgreSQL **Session pooler** connection parameters and database password:
+Fill in `.env` with your Supabase PostgreSQL **Session pooler** connection parameters:
 
 ```dotenv
 DB_HOST=your-session-pooler-host
@@ -52,13 +60,15 @@ DB_USER=your-database-user
 DB_PASSWORD='your-database-password'
 ```
 
-The database password is the one configured for your Supabase project, not your Supabase account password.
+Use the database password configured for the Supabase project, not your Supabase account password.
 
-Never commit `.env` or share its credentials.
+In the Supabase SQL Editor, execute `sql/schema.sql` once against a database where the application tables do not already exist. This file creates the schema; it is not a migration script for an existing installation.
 
-Before running the topic endpoints, open the Supabase SQL Editor and execute the contents of `sql/schema.sql` once, in a database where `public.topics`does not already exist.
+Do not commit `.env` or `.env.test`. The corresponding `.example` files contain placeholders only.
 
 ## Run the API
+
+With the virtual environment active:
 
 ```bash
 python -m uvicorn app.main:app --reload
@@ -73,20 +83,98 @@ python -m uvicorn app.main:app --reload
 |---|---|---|
 | GET | `/` | Return basic service information. |
 | GET | `/topics` | List stored topics. |
-| GET | `/topics/{topic_id}` | Retrieve a topic by its identifier. |
-| GET | `/questions/{question_id}` | Retrieve a question without revealing its solution. |
+| GET | `/topics/{topic_id}` | Retrieve a topic. |
+| GET | `/questions/{question_id}` | Retrieve a question without its solution. |
 | GET | `/attempts/{attempt_id}` | Retrieve a stored attempt summary. |
+| GET | `/attempts/{attempt_id}/review` | Retrieve the summary, submitted answers, solutions, and explanations. |
 | GET | `/topics/{topic_id}/performance` | Retrieve cumulative performance for a topic. |
 | POST | `/topics/validate` | Validate and normalize topic data without saving it. |
-| POST | `/topics` | Create and store a topic. |
-| POST | `/questions` | Create a question with its answer options. |
+| POST | `/topics` | Create a topic. |
+| POST | `/questions` | Create a question and its options. |
 | POST | `/attempts` | Submit a practice attempt and store its results. |
 
-
 ## Run tests
+
+### Tests without a database connection
+
+```bash
+python -m pytest tests/ --ignore=tests/integration/ -v
+```
+
+Application configuration in `.env` is required because the application engine is constructed during import. These tests mock database access and do not connect to Supabase.
+
+### Set up the integration test database
+
+Integration tests use a separate local PostgreSQL database named `opoml_test`.
+
+On Ubuntu or WSL, install PostgreSQL if necessary:
+
+```bash
+sudo apt update
+sudo apt install postgresql
+```
+
+Check that the local PostgreSQL cluster is running:
+
+```bash
+pg_lsclusters
+```
+
+Open the PostgreSQL administration console:
+
+```bash
+sudo -u postgres psql
+```
+
+Create a dedicated role and database once:
+
+```sql
+CREATE ROLE opoml_test_user LOGIN;
+\password opoml_test_user
+CREATE DATABASE opoml_test OWNER opoml_test_user;
+\q
+```
+
+The `\password` command prompts for a password without placing it directly in a SQL statement.
+
+Load the schema into the empty test database:
+
+```bash
+psql -h 127.0.0.1 -p 5432 -U opoml_test_user -d opoml_test -W -v ON_ERROR_STOP=1 --single-transaction -f sql/schema.sql
+```
+
+Copy the test configuration template:
+
+```bash
+cp .env.test.example .env.test
+```
+
+Fill in the local test credentials:
+
+```dotenv
+TEST_DB_HOST=127.0.0.1
+TEST_DB_PORT=5432
+TEST_DB_NAME=opoml_test
+TEST_DB_USER=opoml_test_user
+TEST_DB_PASSWORD='your-local-test-password'
+```
+
+Integration tests require the application configuration in `.env` as well. During API integration tests, the application engine is temporarily replaced with the local test engine.
+
+Run integration tests:
+
+```bash
+python -m pytest tests/integration/ -v
+```
+
+These tests execute real SQL. The practice-flow and rollback tests create their own data and include cleanup.
+
+### Run the complete suite
+
+With both configuration files prepared and local PostgreSQL running:
 
 ```bash
 python -m pytest tests/ -v
 ```
 
-Tests require the environment variables above to be configured, but do not connect to Supabase. They do not verify SQL execution or database constraints.
+Uvicorn does not need to be running: endpoint tests use FastAPI's `TestClient`.
