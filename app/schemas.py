@@ -145,3 +145,44 @@ class AttemptAnswerRead(BaseModel):
 
 class AttemptReviewRead(AttemptRead):
     answers: list[AttemptAnswerRead]
+
+
+class DocumentAsk(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    question: str = Field(min_length=1, max_length=2000)
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
+class DocumentSource(BaseModel):
+    source_id: str
+    document_id: int
+    filename: str
+    chunk_id: int
+    chunk_number: int
+    page_numbers: list[int]
+
+
+class GenerationUsage(BaseModel):
+    input_tokens: int
+    cached_input_tokens: int
+    uncached_input_tokens: int
+    output_tokens: int
+
+
+class DocumentAnswerUsage(BaseModel):
+    embedding_model: str
+    embedding_input_tokens: int
+    generation_model: str
+    generation: GenerationUsage | None
+
+
+class DocumentAnswer(BaseModel):
+    document_id: int
+    question: str
+    answer: str
+    sources: list[DocumentSource]
+    usage: DocumentAnswerUsage

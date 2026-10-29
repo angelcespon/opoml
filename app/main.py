@@ -1,10 +1,15 @@
 # main.py
 
 from fastapi import FastAPI, HTTPException, Path
+from openai import APIError
 from sqlalchemy import bindparam, text
+from sqlalchemy.exc import SQLAlchemyError
 from typing import Annotated
+import logging
 
 from app.database import engine
+from app.ask_document import answer_document
+from app.retrieval import DocumentEmptyError, DocumentNotFoundError
 from app.schemas import (
     AttemptCreate,
     AttemptRead,
@@ -15,7 +20,11 @@ from app.schemas import (
     TopicRead,
     TopicPerformanceRead,
     AttemptReviewRead,
+    DocumentAsk,
+    DocumentAnswer
 )
+
+logger = logging.getLogger(__name__)
 
 # Crear aplicación web
 app = FastAPI(title="OpoML")
@@ -556,3 +565,51 @@ def create_attempt(attempt: AttemptCreate):
         response = AttemptRead(**created_attempt)
 
     return response
+
+@app.post(
+    "/documents/{document_id}/ask",
+    response_model=DocumentAnswer,
+)
+def ask_document_endpoint(
+    document_id: Annotated[int, Path(gt=0)],
+    request: DocumentAsk,
+):
+    try:
+        return answer_document(
+            document_id=document_id,
+            question=request.question,
+            top_k=request.top_k,
+        )
+
+    except DocumentNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="Documento no encontrado.",
+        ) from error
+
+    except DocumentEmptyError as error:
+        raise HTTPException(
+            status_code=409,
+            detail="El documento no tiene fragmentos disponibles.",
+        ) from error
+
+    except SQLAlchemyError as error:
+        logger.exception("Database failure while answering a question.")
+        raise HTTPException(
+            status_code=503,
+            detail="No se ha podido consultar la base de datos.",
+        ) from error
+
+    except APIError as error:
+        logger.exception("OpenAI request failed.")
+        raise HTTPException(
+            status_code=503,
+            detail="El servicio de IA no está disponible en este momento.",
+        ) from error
+
+    except RuntimeError as error:
+        logger.exception("Document answer generation failed.")
+        raise HTTPException(
+            status_code=500,
+            detail="No se ha podido generar una respuesta válida.",
+        ) from error
