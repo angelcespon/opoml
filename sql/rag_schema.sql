@@ -67,4 +67,39 @@ CREATE TABLE public.document_chunks (
 ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.document_chunks ENABLE ROW LEVEL SECURITY;
 
+CREATE TABLE public.question_sources (
+    question_id INTEGER NOT NULL
+        REFERENCES public.questions (id),
+
+    chunk_id INTEGER NOT NULL
+        REFERENCES public.document_chunks (id),
+
+    CONSTRAINT question_sources_pkey
+        PRIMARY KEY (question_id, chunk_id)
+);
+
+CREATE INDEX question_sources_chunk_id_idx
+    ON public.question_sources (chunk_id);
+
+ALTER TABLE public.question_sources ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE public.question_imports (
+    batch_sha256 TEXT PRIMARY KEY
+        CHECK (batch_sha256 ~ '^[0-9a-f]{64}$'),
+
+    document_id INTEGER NOT NULL
+        REFERENCES public.documents (id),
+
+    topic_id INTEGER NOT NULL
+        REFERENCES public.topics (id),
+
+    question_count INTEGER NOT NULL
+        CHECK (question_count > 0),
+
+    imported_at TIMESTAMPTZ NOT NULL
+        DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE public.question_imports ENABLE ROW LEVEL SECURITY;
+
 COMMIT;

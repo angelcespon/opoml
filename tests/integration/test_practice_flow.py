@@ -111,6 +111,7 @@ def test_complete_practice_flow(database_engine, monkeypatch):
                     "correct_option_id": correct_option["id"],
                     "correct_option_content": "4",
                     "explanation": "Dos más dos son cuatro.",
+                    "sources": [],
                 }
             ]
 

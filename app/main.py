@@ -23,6 +23,8 @@ from app.schemas import (
     DocumentAsk,
     DocumentAnswer
 )
+from app.question_repository import insert_question
+
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +302,43 @@ def read_attempt_review(
             for answer in answers_result.mappings()
         ]
 
+        sources_result = connection.execute(
+            text(
+                """
+                SELECT
+                    qs.question_id,
+                    d.id AS document_id,
+                    d.filename,
+                    c.id AS chunk_id,
+                    c.chunk_number,
+                    c.page_numbers
+                FROM public.attempt_answers AS a
+                JOIN public.question_sources AS qs
+                    ON qs.question_id = a.question_id
+                JOIN public.document_chunks AS c
+                    ON c.id = qs.chunk_id
+                JOIN public.documents AS d
+                    ON d.id = c.document_id
+                WHERE a.attempt_id = :attempt_id
+                ORDER BY qs.question_id, d.id, c.chunk_number
+                """
+            ),
+            {"attempt_id": attempt_id},
+        )
+
+        sources_by_question = {}
+
+        for row in sources_result.mappings():
+            source = dict(row)
+            question_id = source.pop("question_id")
+            sources_by_question.setdefault(question_id, []).append(source)
+
+        for answer in response["answers"]:
+            answer["sources"] = sources_by_question.get(
+                answer["question_id"],
+                [],
+            )
+
     return response
 
 
@@ -340,52 +379,7 @@ def create_question(question: QuestionCreate):
                 detail="Tema no encontrado",
             )
 
-        question_result = connection.execute(
-            text(
-                """
-                INSERT INTO public.questions (
-                    topic_id, statement, explanation
-                )
-                VALUES (:topic_id, :statement, :explanation)
-                RETURNING id, topic_id, statement, explanation
-                """
-            ),
-            {
-                "topic_id": question.topic_id,
-                "statement": question.statement,
-                "explanation": question.explanation,
-            },
-        )
-
-        created_question = dict(question_result.mappings().one())
-        created_options = []
-
-        for position, option in enumerate(question.options, start=1):
-            option_result = connection.execute(
-                text(
-                    """
-                    INSERT INTO public.question_options (
-                        question_id, position, content, is_correct
-                    )
-                    VALUES (
-                        :question_id, :position, :content, :is_correct
-                    )
-                    RETURNING id, position, content, is_correct
-                    """
-                ),
-                {
-                    "question_id": created_question["id"],
-                    "position": position,
-                    "content": option.content,
-                    "is_correct": option.is_correct,
-                },
-            )
-
-            created_options.append(
-                dict(option_result.mappings().one())
-            )
-
-        created_question["options"] = created_options
+        created_question = insert_question(connection, question)
 
     return created_question
 

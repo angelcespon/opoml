@@ -261,18 +261,37 @@ def test_attempt_review_returns_summary_and_answers():
         },
     ]
 
+    sources = [
+        {
+            "document_id": 10,
+            "filename": "material_de_estudio.pdf",
+            "chunk_id": 31,
+            "chunk_number": 1,
+            "page_numbers": [1, 2],
+        },
+        {
+            "document_id": 10,
+            "filename": "material_de_estudio.pdf",
+            "chunk_id": 32,
+            "chunk_number": 2,
+            "page_numbers": [2],
+        },
+    ]
+
     attempt_result = MagicMock()
     attempt_result.mappings.return_value.one_or_none.return_value = (
         summary
     )
 
-    answers_result = make_rows_result(answers)
-
     with patch("app.main.engine.connect") as mock_connect:
         connection = mock_connect.return_value.__enter__.return_value
         connection.execute.side_effect = [
             attempt_result,
-            answers_result,
+            make_rows_result(answers),
+            make_rows_result([
+                {"question_id": 1, **source}
+                for source in sources
+            ]),
         ]
 
         with TestClient(app) as client:
@@ -282,10 +301,13 @@ def test_attempt_review_returns_summary_and_answers():
     assert response.json() == {
         **summary,
         "submitted_at": "2026-10-26T10:00:00Z",
-        "answers": answers,
+        "answers": [
+            {**answers[0], "sources": sources},
+            {**answers[1], "sources": []},
+        ],
     }
 
-    assert connection.execute.call_count == 2
+    assert connection.execute.call_count == 3
 
     for call in connection.execute.call_args_list:
         assert call.args[1] == {"attempt_id": 1}
