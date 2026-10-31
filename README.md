@@ -1,42 +1,63 @@
 # OpoML
 
-A platform for competitive exam preparation, designed to guide study through student performance analysis. Planned capabilities include AI-powered queries over study materials, question generation, and Machine Learning to personalize practice.
+OpoML is a backend for competitive exam preparation. Students can ask questions about their study materials, generate multiple-choice questions, submit practice attempts, and review their results with explanations and source references.
+
+The project uses Python, FastAPI, PostgreSQL, pgvector, and the OpenAI API.
 
 ## Roadmap
 
-- **V0:** backend, PostgreSQL database, automated tests, and performance tracking.
-- **V1:** RAG-based queries and question generation from study materials, with source citations.
+- **V0:** backend, database, automated tests, and performance tracking.
+- **V1:** document-based answers and question generation with source references.
 - **V2:** web interface and user pilot.
-- **V3:** evaluation of retrieval, answers, citations, and generated questions.
+- **V3:** systematic evaluation of retrieval, answers, citations, and generated questions.
 - **V4:** ML-based personalization.
 
-## Current status
+## Current features
 
-The V0 backend supports:
+### Practice and performance
 
-- Topic creation and retrieval.
-- Questions with three to five options and exactly one correct answer.
-- Practice submission with correct, incorrect, and unanswered responses.
-- Stored attempt summaries and detailed answer review.
-- Cumulative performance by topic.
+- Create and retrieve topics.
+- Create questions with three to five options and one correct answer.
+- Retrieve questions without revealing their solutions.
+- Submit practice attempts, including unanswered questions.
+- Review results, explanations, and available document references.
+- Track cumulative performance by topic.
 
-Application data is stored in PostgreSQL hosted on Supabase.
+### Study materials and AI
 
-The test suite includes validation tests, endpoint tests with mocked database access, and integration tests against a separate local PostgreSQL database. Integration tests cover schema availability, the complete practice flow, and transaction rollback when saving answers fails.
+- Extract text from PDFs while retaining page references.
+- Split text into overlapping chunks and generate embeddings.
+- Store documents, chunks, and embeddings in PostgreSQL.
+- Answer questions using semantic retrieval and source citations.
+- Generate question batches and review them with a separate model call.
+- Generate sets of up to 100 questions through the CLI, subject to available content and a batch limit.
+- Import accepted questions into a topic and retain their source references.
+- Prevent repeated imports of the same batch.
 
-## Current limitations
+The API supports generation of up to five questions per request. Larger sets currently use the CLI.
 
-- Intended for a single student; authentication and a web interface are not implemented.
-- AI features and ML personalization are planned.
-- Accuracy is the percentage of correct answers out of all submitted questions, including unanswered ones. It is not an exam-specific score with penalties.
-- Attempt summaries and answer correctness are stored at submission time. Review text and correct-option details are retrieved from the current question data. Historical content versioning is not implemented.
+## Limitations
+
+- The application is intended for a single student. Authentication and a web interface are not implemented.
+- PDF ingestion currently uses command-line scripts. OCR and reliable extraction from complex layouts are not implemented.
+- Document queries use semantic search. Hybrid search and conversation history are not implemented.
+- Generated content can contain mistakes. Automated review checks questions and options against the sources but does not currently review explanations.
+- A generation request may return fewer questions than requested. Rejected questions are not automatically repaired.
+- Multi-batch generation runs sequentially. Progress is printed in the terminal; background jobs and automatic resume are not implemented.
+- Duplicate detection within a generated set compares normalized statements. It does not detect paraphrases.
+- Import protection identifies repeated batch content, not semantically equivalent questions. Reordering questions or options can change the batch fingerprint.
+- Repeating a generation request can incur additional API charges and produce another batch.
+- Accuracy is the percentage of correct answers out of all submitted questions, including unanswered ones. Exam-specific penalties are not applied.
+- Attempt summaries and answer correctness are stored at submission time. Review text, solution details, and source content are read from the current database records. Historical content versioning is not implemented.
 - Question editing and deletion are not exposed by the API.
+
+Source citations identify the material used to generate an answer. They do not establish that the material is accurate or up to date.
 
 ## Local setup
 
-Requires Python 3.12 and a Supabase PostgreSQL database. The commands below target Ubuntu or WSL.
+The commands below target Ubuntu or WSL and require Python 3.12.
 
-Run from the repository root:
+From the repository root:
 
 ```bash
 python3 -m venv .venv
@@ -44,13 +65,15 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-Copy the application configuration template:
+### Application configuration
+
+Copy the template:
 
 ```bash
 cp .env.example .env
 ```
 
-Fill in `.env` with your Supabase PostgreSQL **Session pooler** connection parameters:
+Configure your Supabase PostgreSQL Session pooler connection and OpenAI credentials:
 
 ```dotenv
 DB_HOST=your-session-pooler-host
@@ -58,13 +81,33 @@ DB_PORT=5432
 DB_NAME=postgres
 DB_USER=your-database-user
 DB_PASSWORD='your-database-password'
+
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_GENERATION_MODEL=your-generation-model
+OPENAI_REVIEW_MODEL=your-review-model
 ```
 
 Use the database password configured for the Supabase project, not your Supabase account password.
 
-In the Supabase SQL Editor, execute `sql/schema.sql` once against a database where the application tables do not already exist. This file creates the schema; it is not a migration script for an existing installation.
+`OPENAI_REVIEW_MODEL` is optional. If omitted, the reviewer uses `OPENAI_GENERATION_MODEL`.
 
-Do not commit `.env` or `.env.test`. The corresponding `.example` files contain placeholders only.
+Choose models compatible with the structured-output and reasoning settings used by the scripts. The current database schema stores embeddings with 1536 dimensions.
+
+AI operations incur OpenAI API usage charges.
+
+Do not commit `.env`, `.env.test`, or files under `data/`. Configuration templates must contain placeholders only.
+
+### Application database
+
+For a new installation, execute these files in order in the Supabase SQL Editor:
+
+1. `sql/schema.sql`
+2. `sql/rag_schema.sql`
+
+The second file enables pgvector and creates the document, source-reference, and import-tracking tables.
+
+These files initialize an empty application schema. They are not migration scripts and should not be rerun in full against an existing installation.
 
 ## Run the API
 
@@ -77,56 +120,144 @@ python -m uvicorn app.main:app --reload
 - API: http://127.0.0.1:8000/
 - Interactive documentation: http://127.0.0.1:8000/docs
 
-### Available endpoints
+### Endpoints
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/` | Return basic service information. |
-| GET | `/topics` | List stored topics. |
+| GET | `/` | Return service information. |
+| GET | `/topics` | List topics. |
 | GET | `/topics/{topic_id}` | Retrieve a topic. |
 | GET | `/questions/{question_id}` | Retrieve a question without its solution. |
 | GET | `/attempts/{attempt_id}` | Retrieve a stored attempt summary. |
-| GET | `/attempts/{attempt_id}/review` | Retrieve the summary, submitted answers, solutions, and explanations. |
+| GET | `/attempts/{attempt_id}/review` | Retrieve answers, solutions, explanations, and source references. |
 | GET | `/topics/{topic_id}/performance` | Retrieve cumulative performance for a topic. |
-| POST | `/topics/validate` | Validate and normalize topic data without saving it. |
+| POST | `/topics/validate` | Validate topic data without saving it. |
 | POST | `/topics` | Create a topic. |
 | POST | `/questions` | Create a question and its options. |
-| POST | `/attempts` | Submit a practice attempt and store its results. |
+| POST | `/attempts` | Submit and score a practice attempt. |
+| POST | `/documents/{document_id}/ask` | Answer a question using document sources. |
+| POST | `/documents/{document_id}/generate-questions` | Generate, review, and save up to five questions. |
 
-## Run tests
+For example, the generation endpoint accepts:
 
-### Tests without a database connection
+```json
+{
+  "topic_id": 2,
+  "question_count": 3,
+  "option_count": 3
+}
+```
+
+Use an existing topic identifier. The response includes the number of accepted and inserted questions and their database identifiers.
+
+When submitting an attempt, `selected_option_id` must be the option's database identifier returned by the question endpoint, not its display position.
+
+## Import a study document
+
+Place a text-based PDF in `data/documents/`. The example below uses `study_material.pdf`; replace it with your filename.
+
+Run each step separately:
+
+```bash
+python -m app.extract_document "data/documents/study_material.pdf"
+python -m app.chunk_document "data/extracted/study_material.json"
+python -m app.embed_document "data/chunks/study_material.json"
+python -m app.import_document \
+  "data/documents/study_material.pdf" \
+  "data/embeddings/study_material.json"
+```
+
+Inspect the extracted text before generating embeddings. A successful extraction does not guarantee correct reading order or complete text.
+
+The import command prints the document identifier used by subsequent commands and API requests. Embedding generation calls OpenAI; importing saved embeddings does not.
+
+## Ask a document
+
+Replace `1` with an imported document identifier:
+
+```bash
+python -m app.ask_document 1 \
+  --query "¿Qué derechos reconoce el documento a las víctimas?"
+```
+
+The result includes the answer, cited sources, page references, and token usage.
+
+## Generate and import questions
+
+### Generate a reviewed batch
+
+```bash
+python -m app.generate_reviewed_questions 1 \
+  --question-count 3 \
+  --option-count 3
+```
+
+The command saves the context, generated batch, review, and final result under a separate directory in `data/generation_runs/`.
+
+### Generate a larger set
+
+```bash
+python -m app.generate_question_set 1 \
+  --question-count 6 \
+  --option-count 3 \
+  --max-batches 3
+```
+
+Each generation call requests at most five questions. Accepted questions accumulate until the requested count is reached or the available contexts or batch budget are exhausted.
+
+Without `--max-batches`, the limit is `ceil(question_count / 5) + 2`.
+
+Results are saved under `data/question_sets/`. A `partial` result means the requested count was not reached within the available budget and contexts. It can still contain usable questions.
+
+These commands generate and review questions but do not save them to the question tables.
+
+### Import accepted questions
+
+Replace the path and topic identifier with your own:
+
+```bash
+python -m app.import_questions \
+  data/question_sets/RUN_ID/result.json \
+  --topic-id 2
+```
+
+The importer saves questions, options, source references, and the import record in one transaction. If a write fails, the transaction is rolled back.
+
+Importing the same batch again returns `already_imported`. The importer is intended for trusted local output files; it does not independently prove that their contents passed automated review.
+
+## Tests
+
+### Tests without external service calls
 
 ```bash
 python -m pytest tests/ --ignore=tests/integration/ -v
 ```
 
-Application configuration in `.env` is required because the application engine is constructed during import. These tests mock database access and do not connect to Supabase.
+These tests use simulated database and AI responses. They check validation, endpoint behavior, and multi-batch coordination without calling OpenAI or connecting to Supabase.
 
-### Set up the integration test database
+Application database configuration in `.env` is still required because the application engine is constructed during import.
 
-Integration tests use a separate local PostgreSQL database named `opoml_test`.
+### Local integration database
 
-On Ubuntu or WSL, install PostgreSQL if necessary:
+Integration tests use a separate PostgreSQL database named `opoml_test` on `127.0.0.1`.
+
+For PostgreSQL 16 on Ubuntu or WSL:
 
 ```bash
 sudo apt update
-sudo apt install postgresql
-```
-
-Check that the local PostgreSQL cluster is running:
-
-```bash
+sudo apt install postgresql-16 postgresql-16-pgvector
 pg_lsclusters
 ```
 
-Open the PostgreSQL administration console:
+The cluster must be running. If using another PostgreSQL major version, install its matching pgvector package.
+
+Open the administration console:
 
 ```bash
 sudo -u postgres psql
 ```
 
-Create a dedicated role and database once:
+Create the role and database once:
 
 ```sql
 CREATE ROLE opoml_test_user LOGIN;
@@ -135,12 +266,28 @@ CREATE DATABASE opoml_test OWNER opoml_test_user;
 \q
 ```
 
-The `\password` command prompts for a password without placing it directly in a SQL statement.
-
-Load the schema into the empty test database:
+Enable pgvector in the test database:
 
 ```bash
-psql -h 127.0.0.1 -p 5432 -U opoml_test_user -d opoml_test -W -v ON_ERROR_STOP=1 --single-transaction -f sql/schema.sql
+sudo -u postgres psql -p 5432 -d opoml_test -v ON_ERROR_STOP=1 -c "
+CREATE SCHEMA IF NOT EXISTS extensions AUTHORIZATION opoml_test_user;
+CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions;
+GRANT USAGE ON SCHEMA extensions TO opoml_test_user;
+"
+```
+
+Load both schemas into the fresh test database:
+
+```bash
+psql -h 127.0.0.1 -p 5432 \
+  -U opoml_test_user -d opoml_test \
+  -W -v ON_ERROR_STOP=1 --single-transaction \
+  -f sql/schema.sql
+
+psql -h 127.0.0.1 -p 5432 \
+  -U opoml_test_user -d opoml_test \
+  -W -v ON_ERROR_STOP=1 \
+  -f sql/rag_schema.sql
 ```
 
 Copy the test configuration template:
@@ -149,7 +296,7 @@ Copy the test configuration template:
 cp .env.test.example .env.test
 ```
 
-Fill in the local test credentials:
+Set the local credentials:
 
 ```dotenv
 TEST_DB_HOST=127.0.0.1
@@ -159,17 +306,17 @@ TEST_DB_USER=opoml_test_user
 TEST_DB_PASSWORD='your-local-test-password'
 ```
 
-Integration tests require the application configuration in `.env` as well. During API integration tests, the application engine is temporarily replaced with the local test engine.
+Integration tests also require the application configuration in `.env`. Database access is redirected to the local test engine.
 
-Run integration tests:
+Run them with:
 
 ```bash
 python -m pytest tests/integration/ -v
 ```
 
-These tests execute real SQL. The practice-flow and rollback tests create their own data and include cleanup.
+They execute real SQL and cover the practice flow, question imports, duplicate-import protection, source references, and transaction rollback. Test data is cleaned up or rolled back.
 
-### Run the complete suite
+### Complete test suite
 
 With both configuration files prepared and local PostgreSQL running:
 
@@ -177,4 +324,6 @@ With both configuration files prepared and local PostgreSQL running:
 python -m pytest tests/ -v
 ```
 
-Uvicorn does not need to be running: endpoint tests use FastAPI's `TestClient`.
+Uvicorn does not need to be running. Endpoint tests use FastAPI's `TestClient`.
+
+Passing tests verify the covered software behavior; they do not establish the factual quality of generated content.

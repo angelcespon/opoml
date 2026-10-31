@@ -1,10 +1,15 @@
 # main.py
 
 from fastapi import FastAPI, HTTPException, Path
+from openai import APIError
 from sqlalchemy import bindparam, text
+from sqlalchemy.exc import SQLAlchemyError
 from typing import Annotated
+import logging
 
 from app.database import engine
+from app.ask_document import answer_document
+from app.retrieval import DocumentEmptyError, DocumentNotFoundError
 from app.schemas import (
     AttemptCreate,
     AttemptRead,
@@ -15,7 +20,17 @@ from app.schemas import (
     TopicRead,
     TopicPerformanceRead,
     AttemptReviewRead,
+    DocumentAsk,
+    DocumentAnswer
 )
+from app.question_repository import insert_question
+from app.generate_question import generate_questions_from_context
+from app.review_questions import review_questions
+from app.import_questions import ReviewedBatch, import_questions
+from app.retrieval import get_generation_context
+from app.schemas import QuestionGenerateBatchRequest
+
+logger = logging.getLogger(__name__)
 
 # Crear aplicación web
 app = FastAPI(title="OpoML")
@@ -291,6 +306,43 @@ def read_attempt_review(
             for answer in answers_result.mappings()
         ]
 
+        sources_result = connection.execute(
+            text(
+                """
+                SELECT
+                    qs.question_id,
+                    d.id AS document_id,
+                    d.filename,
+                    c.id AS chunk_id,
+                    c.chunk_number,
+                    c.page_numbers
+                FROM public.attempt_answers AS a
+                JOIN public.question_sources AS qs
+                    ON qs.question_id = a.question_id
+                JOIN public.document_chunks AS c
+                    ON c.id = qs.chunk_id
+                JOIN public.documents AS d
+                    ON d.id = c.document_id
+                WHERE a.attempt_id = :attempt_id
+                ORDER BY qs.question_id, d.id, c.chunk_number
+                """
+            ),
+            {"attempt_id": attempt_id},
+        )
+
+        sources_by_question = {}
+
+        for row in sources_result.mappings():
+            source = dict(row)
+            question_id = source.pop("question_id")
+            sources_by_question.setdefault(question_id, []).append(source)
+
+        for answer in response["answers"]:
+            answer["sources"] = sources_by_question.get(
+                answer["question_id"],
+                [],
+            )
+
     return response
 
 
@@ -331,52 +383,7 @@ def create_question(question: QuestionCreate):
                 detail="Tema no encontrado",
             )
 
-        question_result = connection.execute(
-            text(
-                """
-                INSERT INTO public.questions (
-                    topic_id, statement, explanation
-                )
-                VALUES (:topic_id, :statement, :explanation)
-                RETURNING id, topic_id, statement, explanation
-                """
-            ),
-            {
-                "topic_id": question.topic_id,
-                "statement": question.statement,
-                "explanation": question.explanation,
-            },
-        )
-
-        created_question = dict(question_result.mappings().one())
-        created_options = []
-
-        for position, option in enumerate(question.options, start=1):
-            option_result = connection.execute(
-                text(
-                    """
-                    INSERT INTO public.question_options (
-                        question_id, position, content, is_correct
-                    )
-                    VALUES (
-                        :question_id, :position, :content, :is_correct
-                    )
-                    RETURNING id, position, content, is_correct
-                    """
-                ),
-                {
-                    "question_id": created_question["id"],
-                    "position": position,
-                    "content": option.content,
-                    "is_correct": option.is_correct,
-                },
-            )
-
-            created_options.append(
-                dict(option_result.mappings().one())
-            )
-
-        created_question["options"] = created_options
+        created_question = insert_question(connection, question)
 
     return created_question
 
@@ -556,3 +563,174 @@ def create_attempt(attempt: AttemptCreate):
         response = AttemptRead(**created_attempt)
 
     return response
+
+@app.post(
+    "/documents/{document_id}/ask",
+    response_model=DocumentAnswer,
+)
+def ask_document_endpoint(
+    document_id: Annotated[int, Path(gt=0)],
+    request: DocumentAsk,
+):
+    try:
+        return answer_document(
+            document_id=document_id,
+            question=request.question,
+            top_k=request.top_k,
+        )
+
+    except DocumentNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="Documento no encontrado.",
+        ) from error
+
+    except DocumentEmptyError as error:
+        raise HTTPException(
+            status_code=409,
+            detail="El documento no tiene fragmentos disponibles.",
+        ) from error
+
+    except SQLAlchemyError as error:
+        logger.exception("Database failure while answering a question.")
+        raise HTTPException(
+            status_code=503,
+            detail="No se ha podido consultar la base de datos.",
+        ) from error
+
+    except APIError as error:
+        logger.exception("OpenAI request failed.")
+        raise HTTPException(
+            status_code=503,
+            detail="El servicio de IA no está disponible en este momento.",
+        ) from error
+
+    except RuntimeError as error:
+        logger.exception("Document answer generation failed.")
+        raise HTTPException(
+            status_code=500,
+            detail="No se ha podido generar una respuesta válida.",
+        ) from error
+
+@app.post("/documents/{document_id}/generate-questions")
+def generate_questions_endpoint(
+    document_id: Annotated[int, Path(gt=0)],
+    request: QuestionGenerateBatchRequest,
+):
+    try:
+        # Check the destination before spending tokens.
+        with engine.connect() as connection:
+            topic_id = connection.execute(
+                text(
+                    "SELECT id FROM public.topics WHERE id = :topic_id"
+                ),
+                {"topic_id": request.topic_id},
+            ).scalar_one_or_none()
+
+        if topic_id is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Tema no encontrado.",
+            )
+
+        context = get_generation_context(document_id)
+
+        batch = generate_questions_from_context(
+            context=context,
+            question_count=request.question_count,
+            option_count=request.option_count,
+            reasoning_effort="none",
+        )
+
+        accepted_questions = []
+        review = None
+
+        if batch["questions"]:
+            review = review_questions(context, batch)
+
+            accepted_questions = [
+                batch["questions"][item["question_number"] - 1]
+                for item in review["reviews"]
+                if item["accepted"]
+            ]
+
+        saved = {
+            "status": "no_questions_accepted",
+            "inserted_count": 0,
+            "question_ids": [],
+        }
+
+        if accepted_questions:
+            accepted_source_ids = {
+                source_id
+                for question in accepted_questions
+                for source_id in question["source_ids"]
+            }
+
+            accepted_batch = ReviewedBatch(
+                document_id=document_id,
+                accepted_count=len(accepted_questions),
+                questions=accepted_questions,
+                sources=[
+                    source
+                    for source in batch["sources"]
+                    if source["source_id"] in accepted_source_ids
+                ],
+            )
+
+            saved = import_questions(
+                batch=accepted_batch,
+                topic_id=request.topic_id,
+            )
+
+        return {
+            "status": saved["status"],
+            "document_id": document_id,
+            "topic_id": request.topic_id,
+            "requested_count": request.question_count,
+            "generated_count": len(batch["questions"]),
+            "accepted_count": len(accepted_questions),
+            "rejected_count": (
+                len(batch["questions"]) - len(accepted_questions)
+            ),
+            "inserted_count": saved["inserted_count"],
+            "question_ids": saved.get("question_ids", []),
+            "generation_reason": batch["reason"],
+            "usage": {
+                "generation": batch["usage"],
+                "review": review["usage"] if review else None,
+            },
+        }
+
+    except DocumentNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="Documento no encontrado.",
+        ) from error
+
+    except DocumentEmptyError as error:
+        raise HTTPException(
+            status_code=409,
+            detail="El documento no tiene fragmentos disponibles.",
+        ) from error
+
+    except SQLAlchemyError as error:
+        logger.exception("Database failure during question generation.")
+        raise HTTPException(
+            status_code=503,
+            detail="No se ha podido acceder a la base de datos.",
+        ) from error
+
+    except APIError as error:
+        logger.exception("OpenAI request failed during question generation.")
+        raise HTTPException(
+            status_code=503,
+            detail="El servicio de IA no está disponible en este momento.",
+        ) from error
+
+    except (RuntimeError, ValueError) as error:
+        logger.exception("Invalid question generation or import result.")
+        raise HTTPException(
+            status_code=500,
+            detail="No se ha podido completar la generación de preguntas.",
+        ) from error
