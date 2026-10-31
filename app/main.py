@@ -24,7 +24,11 @@ from app.schemas import (
     DocumentAnswer
 )
 from app.question_repository import insert_question
-
+from app.generate_question import generate_questions_from_context
+from app.review_questions import review_questions
+from app.import_questions import ReviewedBatch, import_questions
+from app.retrieval import get_generation_context
+from app.schemas import QuestionGenerateBatchRequest
 
 logger = logging.getLogger(__name__)
 
@@ -606,4 +610,127 @@ def ask_document_endpoint(
         raise HTTPException(
             status_code=500,
             detail="No se ha podido generar una respuesta válida.",
+        ) from error
+
+@app.post("/documents/{document_id}/generate-questions")
+def generate_questions_endpoint(
+    document_id: Annotated[int, Path(gt=0)],
+    request: QuestionGenerateBatchRequest,
+):
+    try:
+        # Check the destination before spending tokens.
+        with engine.connect() as connection:
+            topic_id = connection.execute(
+                text(
+                    "SELECT id FROM public.topics WHERE id = :topic_id"
+                ),
+                {"topic_id": request.topic_id},
+            ).scalar_one_or_none()
+
+        if topic_id is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Tema no encontrado.",
+            )
+
+        context = get_generation_context(document_id)
+
+        batch = generate_questions_from_context(
+            context=context,
+            question_count=request.question_count,
+            option_count=request.option_count,
+            reasoning_effort="none",
+        )
+
+        accepted_questions = []
+        review = None
+
+        if batch["questions"]:
+            review = review_questions(context, batch)
+
+            accepted_questions = [
+                batch["questions"][item["question_number"] - 1]
+                for item in review["reviews"]
+                if item["accepted"]
+            ]
+
+        saved = {
+            "status": "no_questions_accepted",
+            "inserted_count": 0,
+            "question_ids": [],
+        }
+
+        if accepted_questions:
+            accepted_source_ids = {
+                source_id
+                for question in accepted_questions
+                for source_id in question["source_ids"]
+            }
+
+            accepted_batch = ReviewedBatch(
+                document_id=document_id,
+                accepted_count=len(accepted_questions),
+                questions=accepted_questions,
+                sources=[
+                    source
+                    for source in batch["sources"]
+                    if source["source_id"] in accepted_source_ids
+                ],
+            )
+
+            saved = import_questions(
+                batch=accepted_batch,
+                topic_id=request.topic_id,
+            )
+
+        return {
+            "status": saved["status"],
+            "document_id": document_id,
+            "topic_id": request.topic_id,
+            "requested_count": request.question_count,
+            "generated_count": len(batch["questions"]),
+            "accepted_count": len(accepted_questions),
+            "rejected_count": (
+                len(batch["questions"]) - len(accepted_questions)
+            ),
+            "inserted_count": saved["inserted_count"],
+            "question_ids": saved.get("question_ids", []),
+            "generation_reason": batch["reason"],
+            "usage": {
+                "generation": batch["usage"],
+                "review": review["usage"] if review else None,
+            },
+        }
+
+    except DocumentNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="Documento no encontrado.",
+        ) from error
+
+    except DocumentEmptyError as error:
+        raise HTTPException(
+            status_code=409,
+            detail="El documento no tiene fragmentos disponibles.",
+        ) from error
+
+    except SQLAlchemyError as error:
+        logger.exception("Database failure during question generation.")
+        raise HTTPException(
+            status_code=503,
+            detail="No se ha podido acceder a la base de datos.",
+        ) from error
+
+    except APIError as error:
+        logger.exception("OpenAI request failed during question generation.")
+        raise HTTPException(
+            status_code=503,
+            detail="El servicio de IA no está disponible en este momento.",
+        ) from error
+
+    except (RuntimeError, ValueError) as error:
+        logger.exception("Invalid question generation or import result.")
+        raise HTTPException(
+            status_code=500,
+            detail="No se ha podido completar la generación de preguntas.",
         ) from error

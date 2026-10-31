@@ -312,3 +312,11 @@ class QuestionBatchReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reviews: list[QuestionReview]
+
+
+class QuestionGenerateBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    topic_id: int = Field(gt=0)
+    question_count: int = Field(default=3, ge=1, le=5)
+    option_count: int = Field(default=3, ge=3, le=5)
